@@ -5,7 +5,7 @@ UNEP FI Citation Search Engine
 
 import pandas as pd
 import numpy as np
-from fuzzywuzzy import fuzz
+from thefuzz import fuzz
 from collections import Counter
 import re
 
