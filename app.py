@@ -57,6 +57,23 @@ def load_unep_titles(file_path):
     return titles
 
 
+@st.cache_data
+def load_reference_regions_data():
+    """Load all reference with regions.csv file (with cache)"""
+    try:
+        if os.path.exists("all reference with regions.csv"):
+            df = pd.read_csv("all reference with regions.csv")
+            # Normalize the title column for matching
+            df['Title_normalized'] = df['Title'].str.strip().str.lower()
+            return df
+        else:
+            st.warning("⚠️ 'all reference with regions.csv' not found. Additional citation details will not be available.")
+            return None
+    except Exception as e:
+        st.warning(f"⚠️ Could not load 'all reference with regions.csv': {str(e)}")
+        return None
+
+
 def display_disclaimer():
     """Display disclaimer at the bottom of results"""
     st.markdown("""
@@ -69,52 +86,115 @@ def display_disclaimer():
     """, unsafe_allow_html=True)
 
 
-def display_search_results(result):
+def enrich_matches_with_regions_data(matches, regions_df):
+    """
+    Enrich match data with information from all reference with regions.csv
+    
+    Args:
+        matches: List of match dictionaries
+        regions_df: DataFrame from all reference with regions.csv
+    
+    Returns:
+        List of enriched match dictionaries
+    """
+    if regions_df is None:
+        return matches
+    
+    enriched_matches = []
+    
+    for match in matches:
+        # Normalize the citing paper title for matching
+        citing_title_normalized = match['citing_paper'].strip().lower()
+        
+        # Try to find matching row in regions_df
+        matching_rows = regions_df[regions_df['Title_normalized'] == citing_title_normalized]
+        
+        if not matching_rows.empty:
+            # Get the first matching row
+            row = matching_rows.iloc[0]
+            
+            # Add additional information
+            enriched_match = match.copy()
+            enriched_match['first_author'] = row.get('First author', 'N/A')
+            enriched_match['year'] = row.get('Year', 'N/A')
+            enriched_match['source_title'] = row.get('Source title', 'N/A')
+            enriched_match['doi'] = row.get('DOI', 'N/A')
+            enriched_match['cited_by'] = row.get('Cited by', 'N/A')
+            enriched_match['country'] = row.get('Country (First Author)', 'N/A')
+        else:
+            # No match found, use N/A
+            enriched_match = match.copy()
+            enriched_match['first_author'] = 'N/A'
+            enriched_match['year'] = 'N/A'
+            enriched_match['source_title'] = 'N/A'
+            enriched_match['doi'] = 'N/A'
+            enriched_match['cited_by'] = 'N/A'
+            enriched_match['country'] = 'N/A'
+        
+        enriched_matches.append(enriched_match)
+    
+    return enriched_matches
+
+
+def display_search_results(result, regions_df=None):
     """Display search results"""
     st.markdown("---")
+    
+    # Calculate statistics
+    exact_citations = sum(1 for m in result['matches'] if m['similarity_score'] == 100.0)
+    potential_similar = result['citation_count'] - exact_citations
+    total_possible = result['citation_count']  # Total as of Sept 2025
     
     # Display basic statistics
     col1, col2, col3 = st.columns(3)
     
     with col1:
         st.metric(
-            label="📊 Total Citations",
-            value=result['citation_count']
+            label="✅ Exact Citation",
+            value=exact_citations,
+            help="Citations with 100% similarity score"
         )
     
     with col2:
         st.metric(
-            label="🎯 Average Similarity",
-            value=f"{result['average_similarity']:.1f}%"
+            label="🔍 Potential Similar Citation",
+            value=potential_similar,
+            help="Citations with similarity score < 100%"
         )
     
     with col3:
-        if result['match_methods']:
-            main_method = max(result['match_methods'].items(), key=lambda x: x[1])
-            method_labels = {
-                'exact_substring': 'Exact Match',
-                'fuzzy_match': 'Fuzzy Match',
-                'word_overlap': 'Word Overlap'
-            }
-            st.metric(
-                label="🔍 Primary Match Method",
-                value=method_labels.get(main_method[0], main_method[0])
-            )
+        st.metric(
+            label="📊 Total Possible Citations (Sept 2025)",
+            value=total_possible,
+            help="Total citations found as of September 2025"
+        )
     
     # Display citation list if available
     if result['matches']:
         st.markdown("### 📋 Citing Papers")
+        
+        # Enrich matches with regions data if available
+        if regions_df is not None:
+            enriched_matches = enrich_matches_with_regions_data(result['matches'], regions_df)
+        else:
+            enriched_matches = result['matches']
         
         # Create DataFrame
         matches_df = pd.DataFrame([
             {
                 'No.': i + 1,
                 'Citing Paper Title': m['citing_paper'][:100] + '...' if len(m['citing_paper']) > 100 else m['citing_paper'],
+                'First Author': m.get('first_author', 'N/A'),
+                'Year': m.get('year', 'N/A'),
+                'Source Title': m.get('source_title', 'N/A'),
+                'DOI': m.get('doi', 'N/A'),
+                'Cited By': m.get('cited_by', 'N/A'),
+                'Country': m.get('country', 'N/A'),
                 'Reference Text': m['reference_text'][:150] + '...' if len(m['reference_text']) > 150 else m['reference_text'],
                 'Similarity': f"{m['similarity_score']:.1f}%",
                 'Match Method': m['match_method']
             }
-            for i, m in enumerate(result['matches'])
+            for i, m in enumerate(enriched_matches)
         ])
         
         st.dataframe(
@@ -168,6 +248,9 @@ def main():
     # Title
     st.markdown('<h1 class="main-header">📚 UNEP FI Report Citation Search</h1>', unsafe_allow_html=True)
     st.markdown("---")
+    
+    # Load regions data once at the start
+    regions_df = load_reference_regions_data()
     
     # Sidebar - Data file settings
     with st.sidebar:
@@ -233,24 +316,22 @@ def main():
         
         if report_list_option == "📤 Upload my own report list":
             unep_file = st.file_uploader(
-                "Upload your report list (CSV)",
+                "Upload report list (CSV)",
                 type=['csv'],
-                help="Report titles should be in the first column. One report per row.",
-                key="custom_reports"
+                help="First column should contain report titles",
+                key="report_upload"
             )
-            st.info("💡 **CSV Format:**\nFirst column = Report titles\nOne report per row")
-            
-        else:  # Use pre-loaded UNEP FI list
-            default_unep = "UNEP FI Reports Title.csv"
-            if os.path.exists(default_unep):
+        else:
+            # Try to use pre-loaded UNEP FI list
+            if has_default_unep:
                 unep_file = default_unep
-                st.success("✅ Using pre-loaded UNEP FI report list")
+                st.success("✅ Using pre-loaded UNEP FI list")
             else:
-                st.warning("⚠️ Pre-loaded list not found. Please upload your list.")
+                st.warning("⚠️ Pre-loaded UNEP FI list not found")
                 unep_file = st.file_uploader(
-                    "Upload report list (CSV)",
+                    "Upload report list (CSV) as fallback",
                     type=['csv'],
-                    help="Report titles should be in the first column",
+                    help="First column should contain report titles",
                     key="fallback_reports"
                 )
         
@@ -392,7 +473,7 @@ def main():
             with st.spinner(f"🔍 Searching citations for '{report_title[:50]}...'"):
                 try:
                     result = search_single_report(report_title, scopus_df, threshold)
-                    display_search_results(result)
+                    display_search_results(result, regions_df)
                 except Exception as e:
                     st.error(f"❌ Search error: {str(e)}")
         
@@ -436,28 +517,27 @@ def main():
                 progress_bar.empty()
                 status_text.empty()
                 
-                # Display summary results
+                # Display summary results - only show 100% similarity citations
                 st.markdown("### 📊 Batch Search Summary")
                 
                 summary_df = pd.DataFrame([
                     {
                         'Report Name': r['report_title'][:60] + '...' if len(r['report_title']) > 60 else r['report_title'],
-                        'Citation Count': r['citation_count'],
-                        'Average Similarity': f"{r['average_similarity']:.1f}%"
+                        'Exact Citations (100% Similarity)': sum(1 for m in r['matches'] if m['similarity_score'] == 100.0)
                     }
                     for r in results
-                ]).sort_values('Citation Count', ascending=False)
+                ]).sort_values('Exact Citations (100% Similarity)', ascending=False)
                 
                 st.dataframe(summary_df, use_container_width=True)
                 
                 # Visualization
                 fig = px.bar(
                     summary_df.head(20),
-                    x='Citation Count',
+                    x='Exact Citations (100% Similarity)',
                     y='Report Name',
                     orientation='h',
-                    title='Top 20 Most Cited Reports',
-                    labels={'Citation Count': 'Citation Count', 'Report Name': 'Report Name'}
+                    title='Top 20 Reports by Exact Citations (100% Similarity)',
+                    labels={'Exact Citations (100% Similarity)': 'Exact Citations', 'Report Name': 'Report Name'}
                 )
                 fig.update_layout(height=600)
                 st.plotly_chart(fig, use_container_width=True)
