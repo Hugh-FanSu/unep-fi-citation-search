@@ -173,9 +173,29 @@ def main():
     with st.sidebar:
         st.header("📁 Data Configuration")
         
-        # Check if default Scopus data exists
+        # Check if default data files exist
+        import os
+        import glob
+        
+        # Try to find CSV files
         default_scopus = "Complete_References_Scopus_FULL.csv"
-        has_default_scopus = os.path.exists(default_scopus)
+        default_unep = "UNEP FI Reports Title.csv"
+        
+        # Check in current directory and parent directory
+        def find_file(filename):
+            # Try current directory
+            if os.path.exists(filename):
+                return True
+            # Try with explicit path
+            if os.path.exists(os.path.join(os.getcwd(), filename)):
+                return True
+            # Try finding by glob pattern
+            pattern = filename.replace(' ', '*')
+            matches = glob.glob(pattern) or glob.glob(f'*/{pattern}')
+            return len(matches) > 0
+        
+        has_default_scopus = find_file(default_scopus)
+        has_default_unep = find_file(default_unep)
         
         # Scopus citation data
         st.subheader("1️⃣ Scopus Citation Data")
