@@ -86,6 +86,24 @@ def display_disclaimer():
     """, unsafe_allow_html=True)
 
 
+def get_column_value(row, possible_names, default='N/A'):
+    """
+    Get column value from row, trying multiple possible column names
+    Handles columns with trailing/leading spaces
+    """
+    for name in possible_names:
+        # Try exact match first
+        if name in row.index:
+            val = row[name]
+            return val if pd.notna(val) else default
+        # Try with stripped spaces
+        for col in row.index:
+            if col.strip() == name.strip():
+                val = row[col]
+                return val if pd.notna(val) else default
+    return default
+
+
 def enrich_matches_with_regions_data(matches, regions_df):
     """
     Enrich match data with information from all reference with regions.csv
@@ -113,14 +131,14 @@ def enrich_matches_with_regions_data(matches, regions_df):
             # Get the first matching row
             row = matching_rows.iloc[0]
             
-            # Add additional information
+            # Add additional information with flexible column name matching
             enriched_match = match.copy()
-            enriched_match['first_author'] = row.get('First author', 'N/A')
-            enriched_match['year'] = row.get('Year', 'N/A')
-            enriched_match['source_title'] = row.get('Source title', 'N/A')
-            enriched_match['doi'] = row.get('DOI', 'N/A')
-            enriched_match['cited_by'] = row.get('Cited by', 'N/A')
-            enriched_match['country'] = row.get('Country (First Author)', 'N/A')
+            enriched_match['first_author'] = get_column_value(row, ['First author', 'First author ', 'Authors'])
+            enriched_match['year'] = get_column_value(row, ['Year', 'Year '])
+            enriched_match['source_title'] = get_column_value(row, ['Source title', 'Source title ', 'Source'])
+            enriched_match['doi'] = get_column_value(row, ['DOI', 'DOI ', 'doi'])
+            enriched_match['cited_by'] = get_column_value(row, ['Cited by', 'Cited by ', 'Citations'])
+            enriched_match['country'] = get_column_value(row, ['Country (First Author)', 'Country (First Author) ', 'Country'])
         else:
             # No match found, use N/A
             enriched_match = match.copy()
