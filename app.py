@@ -437,10 +437,18 @@ def search_papers_by_keywords(df: pd.DataFrame, query: str) -> pd.DataFrame:
 
 @st.cache_data
 def load_reference_regions_data():
+    """加载regions数据，并预处理列名"""
     try:
         if os.path.exists("all reference with regions.csv"):
             df = pd.read_csv("all reference with regions.csv")
-            df['Title_normalized'] = df['Title'].str.strip().str.lower()
+            # 清理所有列名：去除首尾空格
+            df.columns = df.columns.str.strip()
+            # 创建标准化的Title列用于匹配
+            if 'Title' in df.columns:
+                df['Title_normalized'] = df['Title'].str.strip().str.lower()
+            else:
+                st.warning("⚠️ 'Title' column not found in 'all reference with regions.csv'")
+                return None
             return df
         else:
             st.warning("⚠️ 'all reference with regions.csv' not found")
@@ -455,44 +463,109 @@ def display_disclaimer():
     • Data includes papers indexed in Scopus up to September 2025, excluding various reports.<br>
     • For questions, please contact: <a href="mailto:fan.su@un.org">fan.su@un.org</a></div>""", unsafe_allow_html=True)
 
-def get_column_value(row, possible_names, default='N/A'):
-    for name in possible_names:
-        if name in row.index:
-            val = row[name]
-            return val if pd.notna(val) else default
-        for col in row.index:
-            if col.strip() == name.strip():
-                val = row[col]
-                return val if pd.notna(val) else default
+def find_column_value(df_row, possible_column_names, default='N/A'):
+    """
+    增强的列查找函数，支持多种列名变体
+    
+    Args:
+        df_row: DataFrame的一行
+        possible_column_names: 可能的列名列表
+        default: 默认值
+    
+    Returns:
+        找到的值或默认值
+    """
+    # 首先尝试精确匹配
+    for col_name in possible_column_names:
+        if col_name in df_row.index:
+            val = df_row[col_name]
+            if pd.notna(val) and str(val).strip():
+                return val
+    
+    # 如果精确匹配失败，尝试不区分大小写的匹配
+    row_columns_lower = {col.strip().lower(): col for col in df_row.index}
+    for col_name in possible_column_names:
+        col_lower = col_name.strip().lower()
+        if col_lower in row_columns_lower:
+            actual_col = row_columns_lower[col_lower]
+            val = df_row[actual_col]
+            if pd.notna(val) and str(val).strip():
+                return val
+    
     return default
 
 def enrich_matches_with_regions_data(matches, regions_df):
+    """
+    用regions数据增强匹配结果
+    改进的匹配逻辑，更加健壮
+    """
     if regions_df is None or regions_df.empty:
+        # 如果没有regions数据，返回带有N/A的结果
         enriched_matches = []
         for match in matches:
             enriched_match = match.copy()
-            for key in ['first_author', 'year', 'source_title', 'doi', 'cited_by', 'country']:
-                enriched_match[key] = 'N/A'
+            enriched_match.update({
+                'first_author': 'N/A',
+                'year': 'N/A',
+                'source_title': 'N/A',
+                'doi': 'N/A',
+                'cited_by': 'N/A',
+                'country': 'N/A'
+            })
             enriched_matches.append(enriched_match)
         return enriched_matches
+    
     enriched_matches = []
+    
     for match in matches:
-        citing_title_normalized = match['citing_paper'].strip().lower()
-        matching_rows = regions_df[regions_df['Title_normalized'] == citing_title_normalized]
-        if not matching_rows.empty:
-            row = matching_rows.iloc[0]
-            enriched_match = match.copy()
-            enriched_match['first_author'] = get_column_value(row, ['First author', 'First author ', 'Authors'])
-            enriched_match['year'] = get_column_value(row, ['Year', 'Year '])
-            enriched_match['source_title'] = get_column_value(row, ['Source title', 'Source title ', 'Source'])
-            enriched_match['doi'] = get_column_value(row, ['DOI', 'DOI ', 'doi'])
-            enriched_match['cited_by'] = get_column_value(row, ['Cited by', 'Cited by ', 'Citations'])
-            enriched_match['country'] = get_column_value(row, ['Country (First Author)', 'Country (First Author) ', 'Country'])
+        # 标准化citing paper的标题用于匹配
+        citing_title = match['citing_paper'].strip().lower()
+        
+        # 在regions_df中查找匹配的行
+        if 'Title_normalized' in regions_df.columns:
+            matching_rows = regions_df[regions_df['Title_normalized'] == citing_title]
         else:
-            enriched_match = match.copy()
-            for key in ['first_author', 'year', 'source_title', 'doi', 'cited_by', 'country']:
-                enriched_match[key] = 'N/A'
+            # 备用方案：直接比较Title列
+            matching_rows = regions_df[regions_df['Title'].str.strip().str.lower() == citing_title]
+        
+        enriched_match = match.copy()
+        
+        if not matching_rows.empty:
+            # 找到匹配的行，提取信息
+            row = matching_rows.iloc[0]
+            
+            # 使用增强的列查找函数
+            enriched_match['first_author'] = find_column_value(
+                row, ['First author', 'First Author', 'Authors', 'Author']
+            )
+            enriched_match['year'] = find_column_value(
+                row, ['Year', 'Publication Year', 'Pub Year']
+            )
+            enriched_match['source_title'] = find_column_value(
+                row, ['Source title', 'Source Title', 'Source', 'Journal']
+            )
+            enriched_match['doi'] = find_column_value(
+                row, ['DOI', 'doi']
+            )
+            enriched_match['cited_by'] = find_column_value(
+                row, ['Cited by', 'Cited By', 'Citations', 'Times Cited']
+            )
+            enriched_match['country'] = find_column_value(
+                row, ['Country (First Author)', 'Country', 'Author Country']
+            )
+        else:
+            # 没有找到匹配，使用N/A
+            enriched_match.update({
+                'first_author': 'N/A',
+                'year': 'N/A',
+                'source_title': 'N/A',
+                'doi': 'N/A',
+                'cited_by': 'N/A',
+                'country': 'N/A'
+            })
+        
         enriched_matches.append(enriched_match)
+    
     return enriched_matches
 
 def display_search_results(result, regions_df=None):
@@ -507,10 +580,13 @@ def display_search_results(result, regions_df=None):
         st.metric("🔍 Potential Similar", potential_similar, help="Citations with similarity score < 100%")
     with col3:
         st.metric("📊 Total Citations", total_possible, help="Total citations found as of September 2025")
+    
     if result['matches']:
         st.markdown("### 📋 Citing Papers")
-        enriched_matches = enrich_matches_with_regions_data(result['matches'], regions_df) if regions_df is not None else result['matches']
-        matches_df = pd.DataFrame([{
+        enriched_matches = enrich_matches_with_regions_data(result['matches'], regions_df)
+        
+        # 创建显示用的DataFrame（带省略号）
+        display_df = pd.DataFrame([{
             'No.': i + 1,
             'Citing Paper Title': m['citing_paper'][:100] + '...' if len(m['citing_paper']) > 100 else m['citing_paper'],
             'First Author': m.get('first_author', 'N/A'),
@@ -523,9 +599,35 @@ def display_search_results(result, regions_df=None):
             'Similarity': f"{m['similarity_score']:.1f}%",
             'Match Method': m['match_method']
         } for i, m in enumerate(enriched_matches)])
-        st.dataframe(matches_df, use_container_width=True, height=400)
-        csv = matches_df.to_csv(index=False, encoding='utf-8-sig')
-        st.download_button("📥 Download Citation List (CSV)", data=csv, file_name=f"citations_{result['report_title'][:30]}.csv", mime="text/csv")
+        
+        st.dataframe(display_df, use_container_width=True, height=400)
+        
+        # 创建下载用的DataFrame（完整标题，无省略号）
+        download_df = pd.DataFrame([{
+            'No.': i + 1,
+            'Citing Paper Title': m['citing_paper'],  # 完整标题
+            'First Author': m.get('first_author', 'N/A'),
+            'Year': m.get('year', 'N/A'),
+            'Source Title': m.get('source_title', 'N/A'),
+            'DOI': m.get('doi', 'N/A'),
+            'Cited By': m.get('cited_by', 'N/A'),
+            'Country': m.get('country', 'N/A'),
+            'Reference Text': m['reference_text'],  # 完整引用文本
+            'Similarity': f"{m['similarity_score']:.1f}%",
+            'Match Method': m['match_method']
+        } for i, m in enumerate(enriched_matches)])
+        
+        csv = download_df.to_csv(index=False, encoding='utf-8-sig')
+        
+        # 生成安全的文件名（移除特殊字符）
+        safe_report_title = re.sub(r'[^\w\s-]', '', result['report_title'])[:50]
+        st.download_button(
+            "📥 Download Citation List (CSV)", 
+            data=csv, 
+            file_name=f"citations_{safe_report_title}.csv", 
+            mime="text/csv"
+        )
+        
         if result['match_methods']:
             st.markdown("### 📊 Match Method Distribution")
             method_df = pd.DataFrame([{'Match Method': k, 'Count': v} for k, v in result['match_methods'].items()])
@@ -680,8 +782,11 @@ def main():
     if regions_df is not None and not regions_df.empty:
         col1, col2, col3 = st.columns([3, 1, 1])
         with col1:
-            keyword_input = st.text_input("Enter keywords", value=st.session_state.get('keyword_query', ''),
-                                         placeholder='e.g., "climate risk" or "ocean AND finance"', key='keyword_input')
+            keyword_input = st.text_input(
+                "Enter keywords", 
+                value=st.session_state.get('keyword_query', ''),
+                placeholder='e.g., "climate risk" or "ocean AND finance"'
+            )
         with col2:
             st.markdown("<br>", unsafe_allow_html=True)
             apply_filter_button = st.button("🔍 Apply Filter", type="primary", use_container_width=True)
@@ -832,6 +937,7 @@ def main():
         with col1:
             report_title = st.selectbox("Select report from list", options=[""] + unep_titles,
                                        help="Choose a report from the pre-loaded list")
+            # 修复：移除key参数，让text_input可以正常全选删除
             manual_input = st.text_input("Or enter report title manually", placeholder="Type report name...")
             if manual_input:
                 report_title = manual_input
